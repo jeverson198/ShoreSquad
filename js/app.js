@@ -10,7 +10,16 @@ const CONFIG = {
         { name: "East Coast Park", lat: 1.3001, lng: 103.9147 },
         { name: "Pasir Ris Beach", lat: 1.3721, lng: 103.9493 },
         { name: "Changi Beach", lat: 1.3891, lng: 103.9911 }
-    ]
+    ],
+    // Weather configuration
+    WEATHER_REFRESH_INTERVAL: 600000, // Refresh weather every 10 minutes
+    WEATHER_UNITS: 'metric', // Use Celsius
+    UV_INDEX_LEVELS: {
+        low: 2,
+        moderate: 5,
+        high: 7,
+        veryHigh: 10
+    }
 };
 
 // Wait for DOM to load
@@ -52,37 +61,135 @@ function initializeMap() {
 async function initializeWeather() {
     const weatherContainer = document.querySelector('.weather-container');
     if (!weatherContainer) return;
+
+    // Show loading state
+    weatherContainer.innerHTML = `
+        <div class="weather-loading">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p>Loading weather information...</p>
+        </div>
+    `;
     
     try {
         // Get weather for each cleanup location
         const weatherPromises = CONFIG.SAMPLE_LOCATIONS.map(async location => {
-            const response = await fetch(
-                `https://api.openweathermap.org/data/2.5/weather?lat=${location.lat}&lon=${location.lng}&appid=${CONFIG.WEATHER_API_KEY}&units=metric`
+            // Get current weather
+            const weatherResponse = await fetch(
+                `https://api.openweathermap.org/data/2.5/weather?lat=${location.lat}&lon=${location.lng}&appid=${CONFIG.WEATHER_API_KEY}&units=${CONFIG.WEATHER_UNITS}`
             );
-            if (!response.ok) throw new Error('Weather data fetch failed');
-            return response.json();
+            
+            // Get forecast data
+            const forecastResponse = await fetch(
+                `https://api.openweathermap.org/data/2.5/forecast?lat=${location.lat}&lon=${location.lng}&appid=${CONFIG.WEATHER_API_KEY}&units=${CONFIG.WEATHER_UNITS}`
+            );
+
+            if (!weatherResponse.ok || !forecastResponse.ok) {
+                throw new Error('Weather data fetch failed');
+            }
+
+            const weatherData = await weatherResponse.json();
+            const forecastData = await forecastResponse.json();
+
+            return {
+                current: weatherData,
+                forecast: forecastData,
+                location: location
+            };
         });
 
         const weatherData = await Promise.all(weatherPromises);
         
         // Display weather for each location
-        weatherContainer.innerHTML = weatherData.map(data => `
-            <div class="weather-card">
-                <h3>${data.name}</h3>
-                <div class="weather-icon">
-                    <img src="https://openweathermap.org/img/wn/${data.weather[0].icon}@2x.png" alt="${data.weather[0].description}">
+        weatherContainer.innerHTML = weatherData.map(data => {
+            const current = data.current;
+            const forecast = data.forecast.list.slice(0, 3); // Next 9 hours (3 time slots)
+            const weatherCondition = current.weather[0];
+            const windSpeed = Math.round(current.wind.speed * 3.6); // Convert m/s to km/h
+            
+            // Determine if conditions are suitable for beach cleanup
+            const isGoodForCleanup = current.main.temp >= 22 && 
+                                   current.main.temp <= 32 && 
+                                   windSpeed < 30 && 
+                                   !weatherCondition.main.includes('Rain');
+
+            return `
+                <div class="weather-card ${isGoodForCleanup ? 'good-conditions' : 'poor-conditions'}">
+                    <div class="weather-card-header">
+                        <h3>${data.location.name}</h3>
+                        <div class="weather-recommendation">
+                            ${isGoodForCleanup ? 
+                                '<span class="good"><i class="fas fa-check-circle"></i> Good for Cleanup</span>' : 
+                                '<span class="poor"><i class="fas fa-exclamation-circle"></i> Poor Conditions</span>'
+                            }
+                        </div>
+                    </div>
+                    
+                    <div class="current-weather">
+                        <div class="weather-icon">
+                            <img src="https://openweathermap.org/img/wn/${weatherCondition.icon}@2x.png" 
+                                 alt="${weatherCondition.description}"
+                                 title="${weatherCondition.description}">
+                        </div>
+                        <div class="weather-info">
+                            <p class="temperature">${Math.round(current.main.temp)}°C</p>
+                            <p class="description">${weatherCondition.description}</p>
+                        </div>
+                    </div>
+
+                    <div class="weather-details">
+                        <div class="detail">
+                            <i class="fas fa-tint"></i>
+                            <span>${current.main.humidity}%</span>
+                            <small>Humidity</small>
+                        </div>
+                        <div class="detail">
+                            <i class="fas fa-wind"></i>
+                            <span>${windSpeed} km/h</span>
+                            <small>Wind</small>
+                        </div>
+                        <div class="detail">
+                            <i class="fas fa-temperature-low"></i>
+                            <span>${Math.round(current.main.feels_like)}°C</span>
+                            <small>Feels Like</small>
+                        </div>
+                    </div>
+
+                    <div class="forecast">
+                        <h4>Next Hours</h4>
+                        <div class="forecast-items">
+                            ${forecast.map(item => `
+                                <div class="forecast-item">
+                                    <span class="time">${new Date(item.dt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                    <img src="https://openweathermap.org/img/wn/${item.weather[0].icon}.png" 
+                                         alt="${item.weather[0].description}"
+                                         title="${item.weather[0].description}">
+                                    <span class="temp">${Math.round(item.main.temp)}°C</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="last-updated">
+                        Last updated: ${new Date(current.dt * 1000).toLocaleTimeString()}
+                    </div>
                 </div>
-                <div class="weather-info">
-                    <p class="temperature">${Math.round(data.main.temp)}°C</p>
-                    <p class="description">${data.weather[0].description}</p>
-                    <p class="humidity">Humidity: ${data.main.humidity}%</p>
-                    <p class="wind">Wind: ${data.wind.speed} m/s</p>
-                </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
+
+        // Set up auto-refresh
+        setTimeout(initializeWeather, CONFIG.WEATHER_REFRESH_INTERVAL);
+
     } catch (error) {
         console.error('Weather fetch error:', error);
-        weatherContainer.innerHTML = '<p class="error">Weather data temporarily unavailable</p>';
+        weatherContainer.innerHTML = `
+            <div class="weather-error">
+                <i class="fas fa-exclamation-triangle"></i>
+                <p>Weather data temporarily unavailable</p>
+                <button onclick="initializeWeather()" class="retry-button">
+                    <i class="fas fa-redo"></i> Retry
+                </button>
+            </div>
+        `;
     }
 }
 
